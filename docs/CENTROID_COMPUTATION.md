@@ -1,6 +1,6 @@
 # Centroid Computation for Robot Picking
 
-This document describes the centroid computation methods implemented for finding optimal grasp points in the UOAIS instance segmentation pipeline, specifically designed for vacuum suction cup grippers.
+This document describes centroid computation methods for finding optimal grasp points from instance segmentation masks, designed for vacuum suction cup grippers.
 
 ## Table of Contents
 
@@ -15,7 +15,7 @@ This document describes the centroid computation methods implemented for finding
 
 ## Overview
 
-After performing instance segmentation with UOAIS, we need to find the optimal point on each object for the robot to pick. For vacuum suction cup grippers, this point must be:
+After instance segmentation, we need to find the optimal point on each object for the robot to pick. For vacuum suction cup grippers, this point must be:
 
 1. **On a flat surface** - to form a proper seal
 2. **Far from edges** - to ensure full contact with the suction cup
@@ -207,7 +207,7 @@ from tools.centroid_utils import (
     draw_centroids
 )
 
-# After running UOAIS segmentation...
+# After obtaining instance masks...
 centroids = compute_all_centroids(
     pred_masks=pred_masks,           # [N, H, W] amodal masks
     pred_visible_masks=visible_masks, # [N, H, W] visible masks

@@ -22,9 +22,8 @@ d.png
 test.png
 tmp.py
 
-# Large dataset trees (keep `adet/data/datasets` tracked)
+# Large dataset trees (download separately)
 datasets/
-!adet/data/datasets/
 
 # Archives
 *.zip

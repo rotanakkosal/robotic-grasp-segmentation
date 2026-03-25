@@ -33,7 +33,7 @@ MASK_DIR = "/home/kosal/cbnu_project/AI/picking-arm-robot/uoais/output_img1761/m
 IMG_PATH = "/home/kosal/cbnu_project/AI/picking-arm-robot/uoais/sample_data/arm-robot-Dataset/IMG_1761.png"
 OUT_DIR = "/home/kosal/cbnu_project/AI/picking-arm-robot/uoais/output_img1761_split"
 
-# Model output size (UOAIS resizes to this)
+# Working resolution for masks / overlays
 MODEL_W, MODEL_H = 640, 480
 
 os.makedirs(OUT_DIR, exist_ok=True)

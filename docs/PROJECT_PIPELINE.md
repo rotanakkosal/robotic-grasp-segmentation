@@ -11,7 +11,7 @@
 1. [Project Goal](#1-project-goal)
 2. [Target Objects](#2-target-objects)
 3. [Full Pipeline Overview](#3-full-pipeline-overview)
-4. [Stage 1: Instance Segmentation (UOAIS)](#4-stage-1-instance-segmentation-uoais)
+4. [Stage 1: Instance Segmentation](#4-stage-1-instance-segmentation)
 5. [Stage 2: Shape Classification](#5-stage-2-shape-classification)
 6. [Stage 3: 2D Grasp Point — Adaptive Method](#6-stage-3-2d-grasp-point--adaptive-method)
 7. [Stage 4: Safety Check & Blending](#7-stage-4-safety-check--blending)
@@ -75,7 +75,7 @@ INPUT IMAGE (top-down RGB photo)
         │
         ▼
 ┌───────────────────────────────────────────────────────┐
-│ STAGE 1: UOAIS Instance Segmentation                  │
+│ STAGE 1: Instance Segmentation                        │
 │  → Per-object binary masks (amodal: includes occluded)│
 │  → Bounding boxes, confidence scores                  │
 └──────────────────────────┬────────────────────────────┘
@@ -120,13 +120,11 @@ INPUT IMAGE (top-down RGB photo)
 
 ---
 
-## 4. Stage 1: Instance Segmentation (UOAIS)
+## 4. Stage 1: Instance Segmentation
 
-**UOAIS** = Unseen Object Amodal Instance Segmentation.
-
-The model takes an RGB image and outputs per-object masks. The key word is **amodal**:
-even if Object A is partially hidden behind Object B, UOAIS still predicts the full
-shape of Object A (including the occluded part).
+Your segmenter (learned or classical) takes an RGB image and outputs per-object masks.
+For **amodal** methods, even if Object A is partially hidden behind Object B, the model
+still predicts the full shape of Object A (including the occluded part).
 
 This is critical for pharmaceutical bin-picking because bottles in a bin almost always
 overlap each other.
@@ -617,7 +615,7 @@ elongated objects.
 
 ### Failure Case 3: Segmentation Quality
 
-**Problem:** If UOAIS produces a poor mask (fragmented, oversized, undersized),
+**Problem:** If the segmenter produces a poor mask (fragmented, oversized, undersized),
 the computed grasp point may be inaccurate regardless of centroid method.
 
 **Current status:** Not yet handled — we trust the segmentation quality.
@@ -636,7 +634,7 @@ are bypassed entirely.
 
 | Stage | Status | Notes |
 |-------|--------|-------|
-| UOAIS Segmentation | ✅ Working | Tested on IMG_1761 dataset (11 objects) |
+| Instance segmentation | ✅ Working | Tested on IMG_1761 dataset (11 objects) |
 | Shape Classification | ✅ Working | circ, AR, sol correctly computed |
 | 2D Grasp Point (DT) | ✅ Working | Correct for circular objects |
 | 2D Grasp Point (Moments) | ✅ Working | Correct for elongated/compact objects |

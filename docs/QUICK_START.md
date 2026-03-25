@@ -1,120 +1,104 @@
-# Quick Start: Centroid Computation for Robot Picking
+# Quick start: grasp points from instance masks
 
-This guide helps you quickly get started with computing grasp points for vacuum suction cup grippers.
+This guide covers computing grasp points for vacuum suction cups **after** you already have per-object masks from your own segmenter.
 
 ## Installation
 
-No additional installation required. The centroid utilities use only numpy and OpenCV which are already dependencies of UOAIS.
+```bash
+pip install numpy opencv-python
+# optional
+pip install matplotlib scikit-image
+```
 
-## Basic Usage
+## Mask format
 
-### Command Line
+- One **binary mask image per object** in a folder (PNG or JPG). Nonzero pixels = object.
+- Filenames are sorted lexically to define instance order (`00.png`, `01.png`, …).
+
+Optional: separate visible masks in `--visible-masks-dir`, or under `visible_masks/<stem>/` in batch mode.
+
+## Command line
+
+### Sample dataset (no mask folders)
+
+`sample_data/arm-robot-Dataset/arm_robot_images/` contains flat `IMG_*.png` top-down captures. Use built-in classic CV segmentation:
 
 ```bash
-# Navigate to UOAIS directory
-cd /path/to/uoais
+cd /path/to/this/repo
 
-# Run with default settings (suction method)
+python tools/run_with_centroids.py \
+    --dataset-path ./sample_data/arm-robot-Dataset/arm_robot_images \
+    --simple-masks \
+    --use-dummy-depth \
+    --centroid-method adaptive \
+    --output-dir ./output_centroids
+```
+
+Add `--max-images N` to only process the first *N* files (sorted by name). Prefer `adaptive` or `distance_transform` when using `--use-dummy-depth`.
+
+### With mask folders
+
+```bash
 python tools/run_with_centroids.py \
     --image-path ./sample_data/your_image.png \
+    --amodal-masks-dir ./masks/your_image/ \
     --output-dir ./output_centroids
 
-# Without depth data (uses distance_transform fallback)
 python tools/run_with_centroids.py \
     --image-path ./sample_data/your_image.png \
+    --amodal-masks-dir ./masks/your_image/ \
     --use-dummy-depth \
     --output-dir ./output_centroids
 ```
 
-### Python API
+### Batch layout (your masks)
+
+For each `image_color/foo.png`, provide masks in `masks/foo/*.png` or `amodal_masks/foo/*.png`. Or use `--simple-masks` on a folder of loose `*.png` / `*.jpg` images.
+
+## Python API
 
 ```python
 import cv2
 import numpy as np
 from tools.centroid_utils import compute_all_centroids, draw_centroids
 
-# After UOAIS segmentation, you have:
-# - pred_masks: [N, H, W] amodal masks
-# - pred_visible_masks: [N, H, W] visible masks
-# - pred_boxes: [N, 4] bounding boxes
-# - pred_occlusions: [N] occlusion flags
-# - scores: [N] confidence scores
-# - depth_raw: [H, W] raw depth image (optional)
+# You supply (e.g. from your segmenter):
+# pred_masks: [N, H, W]
+# pred_visible_masks: [N, H, W]  (often same as amodal if you only have one mask type)
+# pred_boxes: [N, 4]  (x1,y1,x2,y2)
+# pred_occlusions: [N]  (0/1 if known, else zeros)
+# scores: [N]  (confidence, or ones)
+# depth_raw: [H, W] in mm (optional)
 
-# Compute centroids
 centroids = compute_all_centroids(
     pred_masks=pred_masks,
     pred_visible_masks=pred_visible_masks,
     pred_boxes=pred_boxes,
     pred_occlusions=pred_occlusions,
     scores=scores,
-    depth_image=depth_raw,  # Can be None
-    method="suction"        # or "top_center", "distance_transform"
+    depth_image=depth_raw,
+    method="suction",
 )
 
-# Get grasp points
 for obj in centroids:
-    # 2D pixel coordinates for grasp
     grasp_x, grasp_y = obj.centroid_visible
-
-    # 3D coordinates in camera frame (if depth available)
     if obj.centroid_3d:
-        X, Y, Z = obj.centroid_3d  # in meters
+        X, Y, Z = obj.centroid_3d
 
-    print(f"Object {obj.object_id}: grasp at ({grasp_x:.1f}, {grasp_y:.1f})")
-
-# Visualize
 vis_image = draw_centroids(rgb_image, centroids)
 cv2.imwrite("output.png", vis_image)
 ```
 
-## Method Selection Guide
+## Method selection
 
-| Your Use Case | Recommended Method | Command |
-|---------------|-------------------|---------|
-| Vacuum suction with depth camera | `suction` | `--centroid-method suction` |
-| Vacuum suction without depth | `distance_transform` | `--centroid-method distance_transform --use-dummy-depth` |
-| Picking bottles by lid | `top_center` | `--centroid-method top_center` |
-| Round objects | `circle` | `--centroid-method circle` |
-| Elongated objects | `ellipse` | `--centroid-method ellipse` |
+| Use case | Method | CLI |
+|----------|--------|-----|
+| Suction + depth camera | `suction` | `--centroid-method suction` |
+| Suction, no depth | `distance_transform` or `adaptive` | `--centroid-method adaptive --use-dummy-depth` |
+| Lids / caps from above | `top_center` | `--centroid-method top_center` |
 
-## Output Format
+## Next steps
 
-Each `ObjectCentroid` contains:
-
-```python
-ObjectCentroid(
-    object_id=0,                      # Object index
-    centroid_visible=(320.5, 245.2),  # USE THIS for grasping (pixels)
-    centroid_amodal=(318.1, 243.8),   # Complete object center
-    centroid_bbox=(315.0, 240.0),     # Bounding box center
-    centroid_3d=(0.052, -0.018, 0.65),# 3D position (X, Y, Z) meters
-    bbox=(200, 150, 430, 340),        # x1, y1, x2, y2
-    is_occluded=False,                # True if partially hidden
-    confidence=0.92,                  # Detection confidence
-    mask_area=4521,                   # Total pixels
-    visible_area=4200                 # Visible pixels
-)
-```
-
-## Tips
-
-1. **Use amodal mask** (default) - gives true object center even for occluded objects
-2. **Adjust suction_cup_radius** - match your actual suction cup size in pixels
-3. **Check is_occluded** - occluded objects may be harder to pick
-4. **Use confidence threshold** - filter out low-confidence detections
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| Centroid at edge of object | Increase `--suction-cup-radius` |
-| No depth data | Use `--use-dummy-depth` (falls back to distance_transform) |
-| Wrong center for bottles | Try `--centroid-method top_center` |
-| Centroid outside mask | Check mask quality, try `--centroid-method mask_bbox` |
-
-## Next Steps
-
-- See [CENTROID_COMPUTATION.md](CENTROID_COMPUTATION.md) for detailed method descriptions
-- See [LITERATURE_REVIEW.md](LITERATURE_REVIEW.md) for research background
-- Integrate with your robot control system using the 3D coordinates
+- [CENTROID_COMPUTATION.md](CENTROID_COMPUTATION.md) — all methods and parameters  
+- [PROJECT_PIPELINE.md](PROJECT_PIPELINE.md) — full robot pipeline  
+- [LITERATURE_REVIEW.md](LITERATURE_REVIEW.md) — references  

@@ -1,0 +1,73 @@
+{
+  "image_path": "sample_data/arm-robot-Dataset/custom_bop_bin_picking_dataset/objects/000001/rgb/000000.png",
+  "num_objects": 2,
+  "centroids": [
+    {
+      "object_id": 0,
+      "centroid_amodal": [
+        369.0,
+        281.0
+      ],
+      "centroid_visible": [
+        369.0,
+        281.0
+      ],
+      "centroid_bbox": [
+        369.0568542480469,
+        281.22821044921875
+      ],
+      "centroid_3d": [
+        309.9585454310809,
+        101.71490454255854,
+        2514.8163343567026
+      ],
+      "bbox": [
+        358,
+        267,
+        379,
+        295
+      ],
+      "is_occluded": false,
+      "confidence": 0.9987524747848511,
+      "mask_area": 484,
+      "visible_area": 479
+    },
+    {
+      "object_id": 11,
+      "centroid_amodal": [
+        230.0,
+        143.0
+      ],
+      "centroid_visible": [
+        230.0,
+        144.0
+      ],
+      "centroid_bbox": [
+        230.938232421875,
+        159.5687713623047
+      ],
+      "centroid_3d": [
+        -86.87971189731331,
+        -194.9362397528283,
+        2615.5510982443548
+      ],
+      "bbox": [
+        205,
+        118,
+        256,
+        201
+      ],
+      "is_occluded": false,
+      "confidence": 0.7092358469963074,
+      "mask_area": 4085,
+      "visible_area": 4071
+    }
+  ],
+  "camera_intrinsics": {
+    "fx": 449.81473795572913,
+    "fy": 600.0109592013888,
+    "cx": 329.35734049479163,
+    "cy": 248.8415798611111
+  },
+  "coordinate_frame": "world_mm"
+}

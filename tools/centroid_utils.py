@@ -1,6 +1,6 @@
 # Copyright (c) 2024. Centroid computation utilities for robot picking applications.
 """
-Centroid Computation Utilities for UOAIS Instance Segmentation
+Centroid computation utilities for instance segmentation masks (robot picking / suction)
 
 This module provides methods to compute object centroids (center points) from
 instance segmentation masks. These centroids can be used for robot picking
@@ -1220,31 +1220,3 @@ def centroids_to_dict(centroids: List[ObjectCentroid]) -> List[Dict]:
     return result
 
 
-# Convenience function for quick centroid extraction
-def extract_centroids_from_instances(instances, depth_image=None, camera_intrinsics=None):
-    """
-    Extract centroids directly from UOAIS instances output.
-
-    Args:
-        instances: Detectron2 Instances object from UOAIS prediction
-        depth_image: Optional raw depth image [H, W] in mm
-        camera_intrinsics: Optional camera parameters
-
-    Returns:
-        List of ObjectCentroid objects
-    """
-    pred_masks = instances.pred_masks.cpu().numpy()
-    pred_visible_masks = instances.pred_visible_masks.cpu().numpy()
-    pred_boxes = instances.pred_boxes.tensor.cpu().numpy()
-    pred_occlusions = instances.pred_occlusions.cpu().numpy()
-    scores = instances.scores.cpu().numpy() if hasattr(instances, 'scores') else np.ones(len(pred_masks))
-
-    return compute_all_centroids(
-        pred_masks=pred_masks,
-        pred_visible_masks=pred_visible_masks,
-        pred_boxes=pred_boxes,
-        pred_occlusions=pred_occlusions,
-        scores=scores,
-        depth_image=depth_image,
-        camera_intrinsics=camera_intrinsics
-    )

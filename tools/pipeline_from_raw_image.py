@@ -8,7 +8,7 @@ Steps:
      Mask → Shape Analysis → DT heatmap → Method+Safety → Final → Full Frame
 
 Usage:
-    python uoais/tools/pipeline_from_raw_image.py
+    python tools/pipeline_from_raw_image.py
 """
 import cv2
 import numpy as np

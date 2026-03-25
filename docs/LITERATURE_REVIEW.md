@@ -1,6 +1,6 @@
 # Literature Review: Grasp Point Detection for Suction-Based Robot Picking
 
-This document provides a comprehensive literature review on methods for finding the optimal central/grasp point on objects for robotic suction cup picking, with a focus on approaches that work with instance segmentation masks (e.g., from UOAIS).
+This document provides a comprehensive literature review on methods for finding the optimal central/grasp point on objects for robotic suction cup picking, with a focus on approaches that work with instance segmentation masks.
 
 **Last Updated**: 2026-02-23
 
@@ -59,7 +59,7 @@ A dataset of 2.8 million point clouds with suction grasps and robustness labels 
 **Key Insight**:
 > "Traditional heuristics such as grasping near the object centroid or at the center of planar surfaces work well for prismatic objects but may fail on objects with non-planar surfaces near the object centroid."
 
-**Relevance**: The suction contact model and wrench resistance metric are directly applicable as evaluation criteria for grasp points derived from UOAIS masks. The GQ-CNN architecture is a benchmark for suction grasp scoring.
+**Relevance**: The suction contact model and wrench resistance metric are directly applicable as evaluation criteria for grasp points derived from instance masks. The GQ-CNN architecture is a benchmark for suction grasp scoring.
 
 ---
 
@@ -89,7 +89,7 @@ A dataset of 2.8 million point clouds with suction grasps and robustness labels 
 
 **Results**: Plans grasps in 0.625s while considering 5000x more candidates; achieves up to 296 mean picks per hour.
 
-**Relevance**: The pixel-wise output format directly maps to using segmentation masks as attention regions. One can mask the FC-GQ-CNN output with UOAIS segmentation masks to select per-object optimal suction points.
+**Relevance**: The pixel-wise output format directly maps to using segmentation masks as attention regions. One can mask the FC-GQ-CNN output with instance segmentation masks to select per-object optimal suction points.
 
 ---
 
@@ -119,7 +119,7 @@ A dataset of 2.8 million point clouds with suction grasps and robustness labels 
 
 Proposes a new physical model for analytically evaluating seal formation and wrench resistance.
 
-**Relevance**: **Highly relevant.** First billion-scale suction grasp benchmark. The seal+wrench evaluation framework can be applied to score grasp points identified from UOAIS masks.
+**Relevance**: **Highly relevant.** First billion-scale suction grasp benchmark. The seal+wrench evaluation framework can be applied to score grasp points identified from instance masks.
 
 ---
 
@@ -135,7 +135,7 @@ Proposes a new physical model for analytically evaluating seal formation and wre
 
 **Results**: 88.83% precision vs. 83.4% for prior state-of-the-art.
 
-**Relevance**: **Highly relevant.** The affordance map concept directly complements UOAIS masks — one can multiply the affordance map by the segmentation mask to find the optimal suction point per object.
+**Relevance**: **Highly relevant.** The affordance map concept directly complements instance masks — one can multiply the affordance map by the segmentation mask to find the optimal suction point per object.
 
 ---
 
@@ -159,7 +159,7 @@ Where `var(ns)` = variance of surface normals, `res(ps)` = plane fitting residua
 
 **Results**: 560 picks per hour in industrial bin-picking.
 
-**Relevance**: **Very highly relevant.** The Jc metric (center proximity) and Js metric (surface flatness) provide a principled framework for scoring grasp points within UOAIS segmentation masks.
+**Relevance**: **Very highly relevant.** The Jc metric (center proximity) and Js metric (surface flatness) provide a principled framework for scoring grasp points within instance segmentation masks.
 
 ---
 
@@ -285,7 +285,7 @@ Where `var(ns)` = variance of surface normals, `res(ps)` = plane fitting residua
 
 **Results**: **Won the 2017 Amazon Robotics Challenge stowing task.**
 
-**Relevance**: **Extremely relevant and immediately implementable.** Given a UOAIS segmentation mask, the distance transform finds the point farthest from the boundary (equivalent to the maximum inscribed circle center). This is a proven, competition-winning approach.
+**Relevance**: **Extremely relevant and immediately implementable.** Given an instance segmentation mask, the distance transform finds the point farthest from the boundary (equivalent to the maximum inscribed circle center). This is a proven, competition-winning approach.
 
 ---
 
@@ -308,7 +308,7 @@ cx, cy = max_loc  # Optimal grasp point
 
 **Limitations**: Does not consider surface flatness, seal quality, or mass distribution (purely 2D).
 
-**Relevance**: **The most directly applicable geometric method for UOAIS masks.** Works without depth data. The competition-winning Cartman approach uses this as its primary component (75% of the score).
+**Relevance**: **The most directly applicable geometric method for instance masks.** Works without depth data. The competition-winning Cartman approach uses this as its primary component (75% of the score).
 
 ---
 
@@ -340,7 +340,7 @@ cx, cy = max_loc  # Optimal grasp point
 
 **Results**: **98% grasp success rate**, outperforming state-of-the-art by 2%.
 
-**Relevance**: **Very highly relevant.** Directly operates on segmentation masks (like UOAIS output) to produce grasp keypoints via skeletal analysis. The straight skeleton method is particularly well-suited for finding natural grasp points on irregularly shaped objects.
+**Relevance**: **Very highly relevant.** Directly operates on segmentation masks (from an instance segmenter) to produce grasp keypoints via skeletal analysis. The straight skeleton method is particularly well-suited for finding natural grasp points on irregularly shaped objects.
 
 ---
 
@@ -376,7 +376,7 @@ cx, cy = max_loc  # Optimal grasp point
 
 **Key Approach**: Uses two-tower ResNet-101 (RGB + Depth) FCNs to produce dense **pixel-wise affordance maps** for multiple grasping primitives. For suction, the affordance map gives a 0-1 probability per pixel. The grasp point is the argmax within the target object region.
 
-**Key Paradigm**: **"Predict dense affordance map, then select best point per object using segmentation mask."** This is precisely the pipeline architecture that works with UOAIS masks.
+**Key Paradigm**: **"Predict dense affordance map, then select best point per object using segmentation mask."** This is precisely the pipeline architecture that works with instance masks.
 
 ---
 
@@ -535,7 +535,7 @@ Js = 0.9 × var(normals) + 0.1 × e^(-5 × planeFitResidual)
 
 ## 10. Recommended Multi-Level Strategy
 
-Based on the literature, the following **dynamic, shape-adaptive approach** is recommended for computing optimal suction grasp points from UOAIS segmentation masks:
+Based on the literature, the following **dynamic, shape-adaptive approach** is recommended for computing optimal suction grasp points from instance segmentation masks:
 
 ### Tier 1: Geometric Baseline (No Learning, Mask-Only) — ALWAYS AVAILABLE
 
@@ -578,7 +578,7 @@ These methods work with segmentation masks alone, no depth required:
 
 6. **Pixel-Wise Affordance Network**
    - Train FC-GQ-CNN or SG-U-Net++ style network
-   - Mask output with UOAIS segmentation masks
+   - Mask output with instance segmentation masks
    - Select per-object maximum as grasp point
 
 ### Key Design Principles (Consensus Across Literature)
@@ -634,5 +634,4 @@ These methods work with segmentation masks alone, no depth required:
 23. Adaptive Grasp Pose Optimization (2025). *Low-Cost Depth Sensors in Complex Environments.* MDPI Sensors. https://www.mdpi.com/1424-8220/25/3/909
 
 ### Other
-24. Back, S., et al. (2022). *Unseen Object Amodal Instance Segmentation via Hierarchical Occlusion Modeling.* ICRA 2022. https://arxiv.org/abs/2109.11103
-25. Badino, H., et al. (2011). *Fast and Accurate Computation of Surface Normals from Range Images.* ICRA 2011.
+24. Badino, H., et al. (2011). *Fast and Accurate Computation of Surface Normals from Range Images.* ICRA 2011.
