@@ -1,203 +1,120 @@
-# Unseen Object Amodal Instance Segmentation (UOAIS)
+# Picking arm robot — grasp & segmentation
 
-Seunghyeok Back, Joosoon Lee, Taewon Kim, Sangjun Noh, Raeyoung Kang, Seongho Bak, Kyoobin Lee 
+Vision stack for **autonomous bin picking**: amodal **instance segmentation**, **2D/3D grasp (suction) points**, and calibration data for arm-robot captures.
 
-This repository contains source codes for the paper *Unseen Object Amodal Instance Segmentation via Hierarchical Occlusion Modeling* (ICRA 2022).
+This repository is a **working fork**: your experiments and dataset layout live here; the core segmentation model follows the ICRA 2022 line of work (see **Upstream & citation** below). The GitHub front page is intentionally **your project**, not the original paper landing page.
 
-[[Paper]](https://ieeexplore.ieee.org/abstract/document/9811646) [[ArXiv]](https://arxiv.org/abs/2109.11103) [[Project Website]](https://sites.google.com/view/uoais) [[Video]](https://youtu.be/rDTmXu6BhIU) 
+## What’s in this tree
 
-<img src="./imgs/demo.gif" height="300">
+| Path | Purpose |
+|------|---------|
+| `sample_data/arm-robot-Dataset/arm_robot_images/` | Flat `IMG_*.png` top-down phone/camera captures |
+| `sample_data/arm-robot-Dataset/custom_bop_bin_picking_dataset/` | BOP-style metadata: `camera.json`, `camera_extrinsics.json`, `objects/…` |
+| `tools/run_with_centroids.py` | Segmentation + centroid / suction grasp pipeline |
+| `tools/centroid_utils.py` | Grasp geometry (`suction`, `adaptive`, distance transform, …) |
+| `docs/` | [QUICK_START](docs/QUICK_START.md), [CENTROID_COMPUTATION](docs/CENTROID_COMPUTATION.md), [PROJECT_PIPELINE](docs/PROJECT_PIPELINE.md), [LITERATURE_REVIEW](docs/LITERATURE_REVIEW.md) |
 
-## Grasp / centroid utilities (bin picking)
+## Quick start (this fork)
 
-This tree also includes **downstream helpers** for vacuum suction: `tools/run_with_centroids.py`, `tools/centroid_utils.py`, and notes under **`docs/`** (`QUICK_START.md`, `CENTROID_COMPUTATION.md`, etc.). Those parts consume segmentation outputs and compute grasp pixels (and optional 3D with depth + intrinsics); they are **not** the ICRA training code itself.
+1. **Environment** (GPU recommended): Python 3.8, PyTorch, CUDA-matched [Detectron2](https://detectron2.readthedocs.io/), then from repo root:
 
-## Updates & TODO Lists
-- [X] (2021.09.26) Segmentation codebase released  
-- [X] (2021.11.15) Inference codes for kinect azure and OSD dataset.  
-- [X] (2021.11.22) ROS nodes for kinect azure and realsense D435  
-- [X] (2021.12.22) Train and evaluation codes on OSD and OCID dataset + OSD-Amodal annotation  
+   ```bash
+   pip install shapely torchfile opencv-python pyfastnoisesimd rapidfuzz termcolor tensorboard tqdm tabulate yacs matplotlib shapely
+   python setup.py build develop
+   ```
 
-## Getting Started
+2. **Weights** (same as upstream): download from the [UOAIS Google Drive](https://drive.google.com/drive/folders/1D5hHFDtgd5RnX__55MmpfOAM83qdGYf0?usp=sharing), place `R50_*` checkpoints under `output/`, and `rgbd_fg.pth` under `foreground_segmentation/`.
 
-### Environment Setup
+3. **Run grasp + segmentation on one arm-robot frame** (adjust paths as needed):
 
-Tested on Titan RTX with python 3.7, pytorch 1.8.0, torchvision 0.9.0, CUDA 10.2 / 11.1 and detectron2 v0.5 / v0.6 (try torch 1.9 if it does not work)
+   ```bash
+   python tools/run_with_centroids.py \
+     --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml \
+     --image-path ./sample_data/arm-robot-Dataset/arm_robot_images/IMG_1761.png \
+     --camera-json ./sample_data/arm-robot-Dataset/custom_bop_bin_picking_dataset/camera.json \
+     --use-dummy-depth \
+     --output-dir ./output_centroids
+   ```
 
-1. Download source codes and checkpoints
-```
+   With real depth, pass `--depth-path …` and drop `--use-dummy-depth`. Optional: `--extrinsics-json`, `--save-json`, `--use-cgnet`.
+
+4. **OSD-style batch** (original layout): `--dataset-path ./sample_data` with `image_color/` and `disparity/`.
+
+## License & academic use
+
+See [LICENSE.md](./LICENSE.md). Third-party notices (Detectron2, AdelaiDet, etc.) apply to bundled code.
+
+If you use **the segmentation method** from the ICRA 2022 paper in research, cite it (BibTeX in the section below).
+
+---
+
+<details>
+<summary><strong>Upstream & citation — ICRA 2022 amodal segmentation (UOAIS)</strong></summary>
+
+**Authors:** Seunghyeok Back, Joosoon Lee, Taewon Kim, Sangjun Noh, Raeyoung Kang, Seongho Bak, Kyoobin Lee  
+
+**Paper:** *Unseen Object Amodal Instance Segmentation via Hierarchical Occlusion Modeling* (ICRA 2022)  
+[[Paper]](https://ieeexplore.ieee.org/abstract/document/9811646) [[arXiv]](https://arxiv.org/abs/2109.11103) [[Project]](https://sites.google.com/view/uoais) [[Video]](https://youtu.be/rDTmXu6BhIU)
+
+<p align="center"><img src="./imgs/demo.gif" height="280" alt="Segmentation demo"></p>
+
+### Original changelog
+- [x] (2021.09.26) Segmentation codebase released  
+- [x] (2021.11.15) Kinect Azure + OSD inference  
+- [x] (2021.11.22) ROS (RealSense D435, Kinect)  
+- [x] (2021.12.22) Train/eval on OSD & OCID + OSD-annot.
+
+### Environment (upstream)
+Tested with Python 3.7–3.8, PyTorch 1.8–1.9, torchvision 0.9.x, CUDA 10.2 / 11.1, Detectron2 v0.5 / v0.6.
+
+```bash
 git clone https://github.com/gist-ailab/uoais.git
 cd uoais
 mkdir output
-```
-2. Download checkpoints at [GDrive](https://drive.google.com/drive/folders/1D5hHFDtgd5RnX__55MmpfOAM83qdGYf0?usp=sharing) 
-
-3. Move the `R50_depth_mlc_occatmask_hom_concat` and `R50_rgbdconcat_mlc_occatmask_hom_concat` to the `output` folder.
-
-4. Move the `rgbd_fg.pth` to the `foreground_segmentation` folder
-
-5. Set up a python environment
-```
+# checkpoints → output/ ; rgbd_fg.pth → foreground_segmentation/
 conda create -n uoais python=3.8
 conda activate uoais
-pip install torch torchvision 
+pip install torch torchvision
 pip install shapely torchfile opencv-python pyfastnoisesimd rapidfuzz termcolor
-```
-6. Install [detectron2](https://detectron2.readthedocs.io/en/latest/tutorials/install.html) (this repo includes a `detectron2/` tree pinned for compatibility; you can also install it per the official guide).
-
-7. Build the AdelaiDet-based extensions in this repo:
-```
-python setup.py build develop 
+# Install Detectron2 for your CUDA build, then:
+python setup.py build develop
 ```
 
-### Run on sample OSD dataset
+### Run on sample OSD layout
 
-<img src="./imgs/demo.png" height="200">
+<p align="center"><img src="./imgs/demo.png" height="180" alt="OSD sample"></p>
 
-```
-# RGB-D + CG-Net (foreground segmentation)
+```bash
+# RGB-D + CG-Net
 python tools/run_on_OSD.py --use-cgnet --dataset-path ./sample_data --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-# Depth + CG-Net (foreground segmentation)
-python tools/run_on_OSD.py --use-cgnet --dataset-path ./sample_data  --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml
-# RGB-D
+# Depth + CG-Net
+python tools/run_on_OSD.py --use-cgnet --dataset-path ./sample_data --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml
+# RGB-D only
 python tools/run_on_OSD.py --dataset-path ./sample_data --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-# Depth
+# Depth only
 python tools/run_on_OSD.py --dataset-path ./sample_data --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml
 ```
 
-### Run with ROS
+### ROS
+**RealSense D435:** `roslaunch realsense2_camera rs_aligned_depth.launch` then `roslaunch uoais uoais_rs_d435.launch` or `rosrun uoais uoais_node.py _mode:="topic"`.  
 
-1. Realsense D-435 ([realsense-ros](https://github.com/IntelRealSense/realsense-ros) is required.)
-```
-roslaunch realsense2_camera rs_aligned_depth.launch
-roslaunch uoais uoais_rs_d435.launch 
-rosrun uoais uoais_node.py _mode:="topic"
-```
+**Azure Kinect:** `roslaunch azure_kinect_ros_driver driver.launch` then `roslaunch uoais uoais_k4a.launch`.  
 
-2. Azure Kinect ([Azure_kinect_ROS_Driver](https://github.com/microsoft/Azure_Kinect_ROS_Driver) is required)
+Topics: `/uoais/vis_img`, `/uoais/results`, service `/get_uoais_results`.
 
-```
-roslaunch azure_kinect_ros_driver driver.launch
-roslaunch uoais uoais_k4a.launch
-```
+### Demos without ROS
+`tools/rs_demo.py` and `tools/k4a_demo.py` with the same `configs/*.yaml` and optional `--use-cgnet`.
 
-#### Topics & service
-- `/uoais/vis_img` (`sensor_msgs/Image`): visualization results  
-- `/uoais/results` (`uoais/UOAISResults`): predictions (`mode:=topic`)  
-- `/get_uoais_results` (`uoais/UOAISRequest`): predictions (`mode:=service`)  
+### Train & evaluation
+Download `UOAIS-Sim`, OSD, OCID per [GDrive](https://drive.google.com/drive/folders/1D5hHFDtgd5RnX__55MmpfOAM83qdGYf0?usp=sharing) and dataset links in the original project README; then `python train_net.py --config-file …`, `eval/eval_on_OSD.py`, `eval/eval_on_OCID.py`.
 
-#### Parameters
-- `mode` (`string`): running mode of ros node (`topic` or `service`)
-- `rgb` (`string`):  topic name of the input rgb
-- `depth` (`string`):  topic name of the input depth
-- `camera_info` (`string`):  topic name of the input camera info
-- `use_cgnet` (`bool`): use CG-Net [1] for foreground segmentation or not 
-- `use_planeseg` (`bool`): use RANSAC for plane segmentation or not
-- `ransac_threshold` (`float`): max distance a point can be from the plane model
+### Acknowledgments (upstream)
+- [Detectron2](https://github.com/facebookresearch/detectron2), [AdelaiDet](https://github.com/aim-uofa/AdelaiDet)  
+- [UCN](https://github.com/NVlabs/UnseenObjectClustering), [VRSP-Net](https://github.com/YutingXiao/Amodal-Segmentation-Based-on-Visible-Region-Segmentation-and-Shape-Prior)  
+- [BlenderProc](https://github.com/DLR-RM/BlenderProc)
 
-### Run without ROS
-
-1. Realsense D-435 ([librealsense](https://github.com/IntelRealSense/librealsense) and [pyrealsense2](https://pypi.org/project/pyrealsense2/) are required.)
-
-```
-# RGB-D + CG-Net (foreground segmentation)
-python tools/rs_demo.py --use-cgnet --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-# Depth + CG-Net (foreground segmentation)
-python tools/rs_demo.py --use-cgnet --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml
-# RGB-D
-python tools/rs_demo.py --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-# Depth
-python tools/rs_demo.py --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml
-```
-
-2. Azure Kinect ([Azure-Kinect-Sensor-SDK](https://github.com/microsoft/Azure-Kinect-Sensor-SDK) and [pyk4a](https://github.com/etiennedub/pyk4a) are required.)
-
-```
-# RGB-D + CG-Net (foreground segmentation)
-python tools/k4a_demo.py --use-cgnet --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-# Depth + CG-Net (foreground segmentation)
-python tools/k4a_demo.py --use-cgnet --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml
-# RGB-D
-python tools/k4a_demo.py --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-# Depth
-python tools/k4a_demo.py --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml
-```
-
-## Train & Evaluation
-
-### Dataset Preparation
-
-1. Download `UOAIS-Sim.zip` and `OSD-Amodal-annotations.zip` at [GDrive](https://drive.google.com/drive/folders/1D5hHFDtgd5RnX__55MmpfOAM83qdGYf0?usp=sharing) 
-2. Download `OSD-0.2-depth.zip` at [OSD](https://www.acin.tuwien.ac.at/vision-for-robotics/software-tools/osd/). [2]
-4. Download `OCID dataset` at [OCID](https://www.acin.tuwien.ac.at/en/vision-for-robotics/software-tools/object-clutter-indoor-dataset/). [3]
-5. Extract the downloaded datasets and organize the folders as follows
-```
-uoais
-├── output
-└── datasets
-       ├── OCID-dataset
-       │     └──ARID10
-       │     └──ARID20
-       │     └──YCB10
-       ├── OSD-0.20-depth
-       │     └──amodal_annotation
-       │     └──annotation
-       │     └──disparity
-       │     └──image_color
-       │     └──occlusion_annotation
-       └── UOAIS-Sim
-              └──annotations
-              └──train
-              └──val
-```
-
-### Train on UOAIS-Sim
-```
-# RGB-D 
-python train_net.py --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-# Depth 
-python train_net.py --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml 
-```
-
-### Evaluation on OSD dataset
-
-```
-# RGB-D + CG-Net
-python eval/eval_on_OSD.py --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml --use-cgnet
-# Depth + CG-Net
-python eval/eval_on_OSD.py --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml --use-cgnet
-```
-This code evaluates a model trained on a single seed (7); metrics may differ from the paper (averaged over multiple seeds).
-
-### Evaluation on OCID dataset
-
-```
-# RGB-D
-python eval/eval_on_OCID.py --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-# Depth
-python eval/eval_on_OCID.py --config-file configs/R50_depth_mlc_occatmask_hom_concat.yaml
-```
-
-### Visualization on OSD dataset
-
-```
-python tools/run_on_OSD.py --use-cgnet --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml
-```
-
-## License
-
-The source code of this repository is released only for academic use. See the [license](./LICENSE.md) file for details.
-
-## Notes
-
-The codes of this repository are built upon the following open sources. Thanks to the authors for sharing the code!
-- Instance segmentation based on [Detectron2](https://github.com/facebookresearch/detectron2) and [AdelaiDet](https://github.com/aim-uofa/AdelaiDet)
-- Evaluation codes are modified from [4] [UCN](https://github.com/NVlabs/UnseenObjectClustering) and [5] [VRSP-Net](https://github.com/YutingXiao/Amodal-Segmentation-Based-on-Visible-Region-Segmentation-and-Shape-Prior). 
-- Synthetic dataset is generated with [6] [BlenderProc](https://github.com/DLR-RM/BlenderProc)
-
-## Citation
-If you use our work in a research project, please cite our work:
-```
+### BibTeX
+```bibtex
 @inproceedings{back2022unseen,
   title={Unseen object amodal instance segmentation via hierarchical occlusion modeling},
   author={Back, Seunghyeok and Lee, Joosoon and Kim, Taewon and Noh, Sangjun and Kang, Raeyoung and Bak, Seongho and Lee, Kyoobin},
@@ -208,12 +125,4 @@ If you use our work in a research project, please cite our work:
 }
 ```
 
-## References
-```
-[1] SUN, Yao, et al. Cg-net: Conditional gis-aware network for individual building segmentation in vhr sar images. IEEE Transactions on Geoscience and Remote Sensing, 2021, 60: 1-15.
-[2] Richtsfeld, Andreas, et al. "Segmentation of unknown objects in indoor environments." 2012 IEEE/RSJ International Conference on Intelligent Robots and Systems. IEEE, 2012.
-[3] Suchi, Markus, et al. "EasyLabel: a semi-automatic pixel-wise object annotation tool for creating robotic RGB-D datasets." 2019 International Conference on Robotics and Automation (ICRA). IEEE, 2019.
-[4] Xiang, Yu, et al. "Learning rgb-d feature embeddings for unseen object instance segmentation." Conference on Robot Learning (CoRL). 2020.
-[5] Xiao, Yuting, et al. "Amodal Segmentation Based on Visible Region Segmentation and Shape Prior." Proceedings of the AAAI Conference on Artificial Intelligence. Vol. 35. No. 4. 2021.
-[6] DENNINGER, Maximilian, et al. Blenderproc. arXiv preprint arXiv:1911.01911, 2019.
-```
+</details>
