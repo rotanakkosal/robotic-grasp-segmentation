@@ -1,74 +1,46 @@
-# Quick start: grasp points from instance masks
+# Quick start: grasp points (centroids)
 
-This guide covers computing grasp points for vacuum suction cups **after** you already have per-object masks from your own segmenter.
+Two paths:
 
-## Installation
+1. **Trained amodal segmentation (in this repo)** — run `tools/run_with_centroids.py` with the same environment as the main [README](../README.md) (PyTorch, Detectron2, `python setup.py build develop`, checkpoints under `output/` and `foreground_segmentation/rgbd_fg.pth` if using CG-Net).
 
-```bash
-pip install numpy opencv-python
-# optional
-pip install matplotlib scikit-image
-```
+2. **Your own masks** — call `compute_all_centroids` in `tools/centroid_utils.py` with `pred_masks` / depth from any source.
 
-## Mask format
+## 1) End-to-end with `run_with_centroids.py`
 
-- One **binary mask image per object** in a folder (PNG or JPG). Nonzero pixels = object.
-- Filenames are sorted lexically to define instance order (`00.png`, `01.png`, …).
-
-Optional: separate visible masks in `--visible-masks-dir`, or under `visible_masks/<stem>/` in batch mode.
-
-## Command line
-
-### Sample dataset (no mask folders)
-
-`sample_data/arm-robot-Dataset/arm_robot_images/` contains flat `IMG_*.png` top-down captures. Use built-in classic CV segmentation:
+Install per main README, then example single image (dummy depth for 2D-only smoke test):
 
 ```bash
 cd /path/to/this/repo
 
 python tools/run_with_centroids.py \
-    --dataset-path ./sample_data/arm-robot-Dataset/arm_robot_images \
-    --simple-masks \
+    --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml \
+    --image-path ./sample_data/arm-robot-Dataset/arm_robot_images/IMG_1761.png \
     --use-dummy-depth \
-    --centroid-method adaptive \
     --output-dir ./output_centroids
 ```
 
-Add `--max-images N` to only process the first *N* files (sorted by name). Prefer `adaptive` or `distance_transform` when using `--use-dummy-depth`.
-
-### With mask folders
+With real depth:
 
 ```bash
 python tools/run_with_centroids.py \
-    --image-path ./sample_data/your_image.png \
-    --amodal-masks-dir ./masks/your_image/ \
-    --output-dir ./output_centroids
-
-python tools/run_with_centroids.py \
-    --image-path ./sample_data/your_image.png \
-    --amodal-masks-dir ./masks/your_image/ \
-    --use-dummy-depth \
+    --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml \
+    --image-path ./your.png \
+    --depth-path ./your_depth.png \
+    --camera-json ./sample_data/arm-robot-Dataset/custom_bop_bin_picking_dataset/camera.json \
+    --save-json \
     --output-dir ./output_centroids
 ```
 
-### Batch layout (your masks)
+Batch OSD-style layout: `--dataset-path ./sample_data` with `image_color/` and `disparity/`.
 
-For each `image_color/foo.png`, provide masks in `masks/foo/*.png` or `amodal_masks/foo/*.png`. Or use `--simple-masks` on a folder of loose `*.png` / `*.jpg` images.
+Foreground filtering: add `--use-cgnet`.
 
-## Python API
+## 2) Python API (masks you already have)
 
 ```python
 import cv2
-import numpy as np
 from tools.centroid_utils import compute_all_centroids, draw_centroids
-
-# You supply (e.g. from your segmenter):
-# pred_masks: [N, H, W]
-# pred_visible_masks: [N, H, W]  (often same as amodal if you only have one mask type)
-# pred_boxes: [N, 4]  (x1,y1,x2,y2)
-# pred_occlusions: [N]  (0/1 if known, else zeros)
-# scores: [N]  (confidence, or ones)
-# depth_raw: [H, W] in mm (optional)
 
 centroids = compute_all_centroids(
     pred_masks=pred_masks,
@@ -80,25 +52,20 @@ centroids = compute_all_centroids(
     method="suction",
 )
 
-for obj in centroids:
-    grasp_x, grasp_y = obj.centroid_visible
-    if obj.centroid_3d:
-        X, Y, Z = obj.centroid_3d
-
 vis_image = draw_centroids(rgb_image, centroids)
 cv2.imwrite("output.png", vis_image)
 ```
 
 ## Method selection
 
-| Use case | Method | CLI |
-|----------|--------|-----|
-| Suction + depth camera | `suction` | `--centroid-method suction` |
-| Suction, no depth | `distance_transform` or `adaptive` | `--centroid-method adaptive --use-dummy-depth` |
-| Lids / caps from above | `top_center` | `--centroid-method top_center` |
+| Use case | Method |
+|----------|--------|
+| Suction + depth | `suction` |
+| No / dummy depth | `adaptive` or `distance_transform` |
+| Lids from above | `top_center` |
 
-## Next steps
+See [CENTROID_COMPUTATION.md](CENTROID_COMPUTATION.md) for all options.
 
-- [CENTROID_COMPUTATION.md](CENTROID_COMPUTATION.md) — all methods and parameters  
-- [PROJECT_PIPELINE.md](PROJECT_PIPELINE.md) — full robot pipeline  
-- [LITERATURE_REVIEW.md](LITERATURE_REVIEW.md) — references  
+## Classic CV masks only
+
+For threshold-based instances without the neural network, see `tools/pipeline_from_raw_image.py` (visualization pipeline); you can still pass resulting masks into `compute_all_centroids` in a short script if needed.

@@ -1,158 +1,316 @@
+# Copyright (c) 2024. UOAIS inference with centroid computation for robot picking.
 """
-Instance masks → centroid / suction grasp points for robot picking.
+UOAIS Inference with Centroid Computation
 
-This script does not run a neural segmenter. Provide **binary masks** (one PNG per
-object, sorted by filename) from your own segmentation method.
+This script demonstrates how to:
+1. Run UOAIS instance segmentation on RGB-D images
+2. Compute object centroids (center points) for robot picking
+3. Visualize results with centroid markers
+4. Output 3D coordinates for robot control
 
 Usage:
-    python tools/run_with_centroids.py \\
-        --image-path ./scene.png \\
-        --amodal-masks-dir ./masks/scene/ \\
+    python tools/run_with_centroids.py \
+        --config-file configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml \
+        --dataset-path ./sample_data \
         --output-dir ./output_centroids
 
-    python tools/run_with_centroids.py \\
-        --dataset-path ./sample_data \\
-        --output-dir ./output_centroids
+    # With foreground segmentation filtering:
+    python tools/run_with_centroids.py \
+        --use-cgnet \
+        --dataset-path ./sample_data
 
-**Batch with mask folders:** for each `image_color/foo.png`, use `masks/foo/*.png`
-or `amodal_masks/foo/*.png`.
-
-**Bundled sample (no mask folders):** use classic CV with `--simple-masks`, e.g.
-`sample_data/arm-robot-Dataset/arm_robot_images` (flat `IMG_*.png`).
+    # Single image:
+    python tools/run_with_centroids.py \
+        --image-path ./my_image.png \
+        --depth-path ./my_depth.png
 """
 
 import argparse
 import glob
-import json
 import os
 import sys
-
+import json
 import cv2
 import numpy as np
-from typing import Dict, List, Optional
+import torch
 
+# Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from adet.config import get_cfg
+from adet.utils.visualizer import visualize_pred_amoda_occ, Visualizer
+from adet.utils.post_process import detector_postprocess, DefaultPredictor
+
+from utils import normalize_depth, inpaint_depth, standardize_image, array_to_tensor
+from foreground_segmentation.model import Context_Guided_Network
+
+# Import centroid utilities
 from tools.centroid_utils import (
     compute_all_centroids,
     draw_centroids,
     get_best_grasp_point,
     centroids_to_dict,
+    ObjectCentroid
 )
-from tools.pipeline_from_raw_image import segment_objects
-
-
-def load_binary_masks(mask_dir: str, width: int, height: int) -> np.ndarray:
-    """Load *.png / *.jpg from mask_dir, sorted; resize to (width, height)."""
-    paths = sorted(
-        glob.glob(os.path.join(mask_dir, "*.png"))
-        + glob.glob(os.path.join(mask_dir, "*.jpg"))
-    )
-    if not paths:
-        raise FileNotFoundError(f"No mask images in {mask_dir}")
-    masks = []
-    for p in paths:
-        m = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
-        if m is None:
-            continue
-        m = (m > 0).astype(np.float32)
-        if m.shape[1] != width or m.shape[0] != height:
-            m = cv2.resize(m, (width, height), interpolation=cv2.INTER_NEAREST)
-        masks.append(m)
-    if not masks:
-        raise ValueError(f"Could not read any masks from {mask_dir}")
-    return np.stack(masks, axis=0)
-
-
-def masks_to_boxes(masks: np.ndarray) -> np.ndarray:
-    """masks [N,H,W] → boxes [N,4] as x1,y1,x2,y2 float32."""
-    boxes = []
-    for i in range(masks.shape[0]):
-        ys, xs = np.where(masks[i] > 0)
-        if len(xs) == 0:
-            boxes.append([0.0, 0.0, 0.0, 0.0])
-        else:
-            boxes.append(
-                [float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())]
-            )
-    return np.array(boxes, dtype=np.float32)
 
 
 def visualize_masks_clean(rgb_img, masks, centroids, alpha=0.5):
+    """
+    Clean visualization that accurately shows mask boundaries and centroids.
+
+    This avoids the visual illusion caused by thick borders in the original
+    visualize_pred_amoda_occ function.
+
+    Args:
+        rgb_img: RGB image [H, W, 3]
+        masks: Amodal masks [N, H, W]
+        centroids: List of ObjectCentroid objects
+        alpha: Mask transparency (0-1)
+
+    Returns:
+        Visualization image with masks and centroids
+    """
     vis_img = rgb_img.copy()
-    np.random.seed(42)
+
+    # Generate distinct colors for each instance
+    np.random.seed(42)  # For reproducibility
     colors = []
     for i in range(len(masks)):
-        hue = (i * 0.618033988749895) % 1.0
-        color = np.array(
-            cv2.cvtColor(
-                np.uint8([[[hue * 180, 200, 200]]]), cv2.COLOR_HSV2BGR
-            )[0, 0],
-            dtype=np.float32,
-        )
+        # Use HSV color space for better distribution
+        hue = (i * 0.618033988749895) % 1.0  # Golden ratio for good distribution
+        color = np.array(cv2.cvtColor(
+            np.uint8([[[hue * 180, 200, 200]]]),
+            cv2.COLOR_HSV2BGR
+        )[0, 0], dtype=np.float32)
         colors.append(color)
 
+    # Draw each mask with its color
     for i, mask in enumerate(masks):
         mask_bool = mask > 0
         color = colors[i]
+
+        # Blend mask color with original image
         vis_img[mask_bool] = (
-            vis_img[mask_bool] * (1 - alpha) + color * alpha
+            vis_img[mask_bool] * (1 - alpha) +
+            color * alpha
         ).astype(np.uint8)
+
+        # Draw thin contour (1-2 pixels) to show exact boundary
         contours, _ = cv2.findContours(
-            mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            mask.astype(np.uint8),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
         )
         cv2.drawContours(vis_img, contours, -1, (255, 255, 255), 1)
 
-    return draw_centroids(
+    # Draw centroids: RED = geometric center, GREEN = suction grasp point
+    vis_img = draw_centroids(
         vis_img,
         centroids,
-        draw_amodal=True,
-        draw_grasp=True,
+        draw_amodal=True,       # Draw geometric center (red dot)
+        draw_grasp=True,        # Draw suction grasp point (green cross)
         draw_bbox_center=False,
         draw_bbox=False,
-        draw_labels=True,
+        draw_labels=True
     )
 
-
-def resolve_mask_dir_for_image(dataset_path: str, rgb_path: str) -> Optional[str]:
-    base = os.path.splitext(os.path.basename(rgb_path))[0]
-    for sub in ("masks", "amodal_masks"):
-        d = os.path.join(dataset_path, sub, base)
-        if not os.path.isdir(d):
-            continue
-        paths = glob.glob(os.path.join(d, "*.png")) + glob.glob(
-            os.path.join(d, "*.jpg")
-        )
-        if paths:
-            return d
-    return None
+    return vis_img
 
 
-def process_from_masks(
+def get_parser():
+    parser = argparse.ArgumentParser(
+        description="UOAIS Instance Segmentation with Centroid Computation for Robot Picking"
+    )
+    parser.add_argument(
+        "--config-file",
+        default="configs/R50_rgbdconcat_mlc_occatmask_hom_concat.yaml",
+        metavar="FILE",
+        help="path to config file",
+    )
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.5,
+        help="Minimum score for instance predictions to be shown",
+    )
+    parser.add_argument(
+        "--use-cgnet",
+        action="store_true",
+        help="Use foreground segmentation model to filter out background instances"
+    )
+    parser.add_argument(
+        "--cgnet-weight-path",
+        type=str,
+        default="./foreground_segmentation/rgbd_fg.pth",
+        help="path to foreground segmentation weight"
+    )
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default="./sample_data",
+        help="path to the dataset (with image_color/ and disparity/ subdirs)"
+    )
+    parser.add_argument(
+        "--image-path",
+        type=str,
+        default=None,
+        help="path to a single RGB image file (overrides --dataset-path)"
+    )
+    parser.add_argument(
+        "--depth-path",
+        type=str,
+        default=None,
+        help="path to corresponding depth image (used with --image-path)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./output_centroids",
+        help="directory to save visualization results and centroid data"
+    )
+    parser.add_argument(
+        "--use-dummy-depth",
+        action="store_true",
+        help="Use dummy depth image if real depth unavailable"
+    )
+    parser.add_argument(
+        "--save-json",
+        action="store_true",
+        help="Save centroid data as JSON files"
+    )
+    parser.add_argument(
+        "--centroid-method",
+        type=str,
+        default="suction",
+        choices=["suction", "adaptive", "skeleton_dt", "top_center", "distance_transform", "ellipse", "circle", "mask_bbox", "bbox", "moments", "median"],
+        help="Method for computing centroids: suction=surface-normal based optimal point (BEST for vacuum grippers with depth, based on Dex-Net 3.0), adaptive=shape-adaptive auto-selection (BEST without depth, based on Cartman/ICRoM 2023), skeleton_dt=medial axis skeleton + distance transform (for complex shapes), top_center=center of top region (for picking lids), distance_transform=point furthest from edges, ellipse=fitted ellipse center, circle=enclosing circle center, mask_bbox=mask extent center, bbox=predicted box center, moments=center of mass, median=robust to outliers"
+    )
+    parser.add_argument(
+        "--suction-cup-radius",
+        type=int,
+        default=15,
+        help="Radius of suction cup in pixels (used for 'suction' method to check contact area)"
+    )
+    parser.add_argument(
+        "--use-visible-mask",
+        action="store_true",
+        help="Use visible mask instead of amodal mask for centroid computation (default: use amodal for true object center)"
+    )
+    parser.add_argument(
+        "--draw-bbox",
+        action="store_true",
+        help="Draw bounding boxes around objects (default: off, only centroids shown)"
+    )
+    parser.add_argument(
+        "--clean-vis",
+        action="store_true",
+        help="Use clean visualization (thin borders, accurate mask fill) instead of default thick-border style"
+    )
+    # Camera intrinsics for 3D computation (defaults: RealSense L515 at 1920x1080)
+    parser.add_argument("--fx", type=float, default=1349.4442138671875, help="Camera focal length x")
+    parser.add_argument("--fy", type=float, default=1350.024658203125,  help="Camera focal length y")
+    parser.add_argument("--cx", type=float, default=988.072021484375,   help="Camera principal point x")
+    parser.add_argument("--cy", type=float, default=559.8935546875,     help="Camera principal point y")
+    parser.add_argument("--camera-json", type=str, default=None,
+                        help="Path to camera.json (overrides --fx/fy/cx/cy if provided)")
+    parser.add_argument("--extrinsics-json", type=str, default=None,
+                        help="Path to camera_extrinsics.json for camera→world transform")
+
+    return parser
+
+
+def process_single_image(
     rgb_img: np.ndarray,
     depth_img_raw: np.ndarray,
-    pred_masks: np.ndarray,
-    pred_visible_masks: np.ndarray,
+    predictor,
+    cfg,
+    fg_model=None,
     centroid_method: str = "suction",
-    camera_intrinsics: Optional[Dict] = None,
-    camera_extrinsics: Optional[Dict] = None,
+    camera_intrinsics: dict = None,
+    camera_extrinsics: dict = None,
     use_amodal: bool = True,
     draw_bbox: bool = False,
-    suction_cup_radius: int = 15,
-    workspace_bounds: Optional[Dict] = None,
+    clean_vis: bool = False,
+    suction_cup_radius: int = 15
 ):
-    height, width = rgb_img.shape[:2]
-    rgb_work = rgb_img
-    depth_raw_resized = depth_img_raw.astype(np.float32)
-    if depth_raw_resized.shape[:2] != (height, width):
-        depth_raw_resized = cv2.resize(
-            depth_raw_resized, (width, height), interpolation=cv2.INTER_NEAREST
-        )
+    """
+    Process a single image and return segmentation results with centroids.
 
-    pred_boxes = masks_to_boxes(pred_masks)
-    pred_occlusions = np.zeros(len(pred_masks), dtype=np.float32)
-    scores = np.ones(len(pred_masks), dtype=np.float32)
+    Args:
+        rgb_img: RGB image [H, W, 3] (BGR format)
+        depth_img_raw: Raw depth image [H, W] in millimeters
+        predictor: UOAIS predictor
+        cfg: Detectron2 config
+        fg_model: Optional CG-Net foreground segmentation model
+        centroid_method: Method for centroid computation
+        camera_intrinsics: Camera parameters for 3D projection
+        use_amodal: If True, use amodal mask for centroid (true object center)
+        draw_bbox: If True, draw bounding boxes on visualization
+        clean_vis: If True, use clean visualization with thin borders
+        suction_cup_radius: Radius of suction cup in pixels (for 'suction' method)
 
+    Returns:
+        dict with keys: 'centroids', 'masks', 'visible_masks', 'boxes', 'occlusions', 'vis_image'
+    """
+    W, H = cfg.INPUT.IMG_SIZE
+
+    # Resize RGB
+    rgb_resized = cv2.resize(rgb_img, (W, H))
+
+    # Normalize and prepare depth
+    depth_normalized = normalize_depth(depth_img_raw.copy())
+    depth_normalized = cv2.resize(depth_normalized, (W, H), interpolation=cv2.INTER_NEAREST)
+    depth_normalized = inpaint_depth(depth_normalized)
+
+    # Also resize raw depth for 3D computation
+    depth_raw_resized = cv2.resize(depth_img_raw, (W, H), interpolation=cv2.INTER_NEAREST)
+
+    # Prepare UOAIS input
+    if cfg.INPUT.DEPTH and cfg.INPUT.DEPTH_ONLY:
+        uoais_input = depth_normalized
+    elif cfg.INPUT.DEPTH and not cfg.INPUT.DEPTH_ONLY:
+        uoais_input = np.concatenate([rgb_resized, depth_normalized], -1)
+    else:
+        uoais_input = rgb_resized
+
+    # Run UOAIS inference
+    outputs = predictor(uoais_input)
+    instances = detector_postprocess(outputs['instances'], H, W).to('cpu')
+
+    # Extract predictions
+    pred_masks = instances.pred_masks.detach().cpu().numpy()
+    pred_visible_masks = instances.pred_visible_masks.detach().cpu().numpy()
+    pred_boxes = instances.pred_boxes.tensor.detach().cpu().numpy()
+    pred_occlusions = instances.pred_occlusions.detach().cpu().numpy()
+    scores = instances.scores.detach().cpu().numpy() if hasattr(instances, 'scores') else np.ones(len(pred_masks))
+
+    # CG-Net foreground filtering
+    if fg_model is not None:
+        fg_rgb_input = standardize_image(cv2.resize(rgb_resized, (320, 240)))
+        fg_rgb_input = array_to_tensor(fg_rgb_input).unsqueeze(0)
+        fg_depth_input = cv2.resize(depth_normalized, (320, 240))
+        fg_depth_input = array_to_tensor(fg_depth_input[:, :, 0:1]).unsqueeze(0) / 255
+        fg_input = torch.cat([fg_rgb_input, fg_depth_input], 1)
+        fg_output = fg_model(fg_input.cuda())
+        fg_output = fg_output.cpu().data[0].numpy().transpose(1, 2, 0)
+        fg_output = np.asarray(np.argmax(fg_output, axis=2), dtype=np.uint8)
+        fg_output = cv2.resize(fg_output, (W, H), interpolation=cv2.INTER_NEAREST)
+
+        # Filter out background instances
+        remove_idxs = []
+        for i, pred_visible in enumerate(pred_visible_masks):
+            iou = np.sum(np.bitwise_and(pred_visible, fg_output)) / (np.sum(pred_visible) + 1e-6)
+            if iou < 0.5:
+                remove_idxs.append(i)
+
+        if remove_idxs:
+            pred_masks = np.delete(pred_masks, remove_idxs, 0)
+            pred_visible_masks = np.delete(pred_visible_masks, remove_idxs, 0)
+            pred_boxes = np.delete(pred_boxes, remove_idxs, 0)
+            pred_occlusions = np.delete(pred_occlusions, remove_idxs, 0)
+            scores = np.delete(scores, remove_idxs, 0)
+
+    # Compute centroids for all detected objects
     centroids = compute_all_centroids(
         pred_masks=pred_masks,
         pred_visible_masks=pred_visible_masks,
@@ -163,163 +321,74 @@ def process_from_masks(
         camera_intrinsics=camera_intrinsics,
         method=centroid_method,
         use_amodal_for_centroid=use_amodal,
-        suction_cup_radius=suction_cup_radius,
+        suction_cup_radius=suction_cup_radius
     )
 
+    # Apply extrinsics: convert 3D camera frame → world frame (mm)
     if camera_extrinsics is not None:
-        R = camera_extrinsics["R"]
-        t = camera_extrinsics["t"]
+        R = camera_extrinsics['R']
+        t = camera_extrinsics['t']
         for obj in centroids:
             if obj.centroid_3d is not None:
-                p = np.array(obj.centroid_3d) * 1000.0
-                obj.centroid_3d = tuple((R @ p + t).tolist())
+                p = np.array(obj.centroid_3d) * 1000.0  # meters → mm
+                p_world = R @ p + t
+                obj.centroid_3d = tuple(p_world.tolist())
             if obj.grasp_point_3d is not None:
                 p = np.array(obj.grasp_point_3d) * 1000.0
-                obj.grasp_point_3d = tuple((R @ p + t).tolist())
+                p_world = R @ p + t
+                obj.grasp_point_3d = tuple(p_world.tolist())
 
-    if workspace_bounds is not None and camera_extrinsics is not None:
-        filtered = []
-        rejected = []
-        for obj in centroids:
-            if obj.centroid_3d is None:
-                rejected.append((obj.object_id, "no_3d"))
-                continue
-            X, Y, Z = obj.centroid_3d
-            in_x = workspace_bounds["x_min"] <= X <= workspace_bounds["x_max"]
-            in_y = workspace_bounds["y_min"] <= Y <= workspace_bounds["y_max"]
-            in_z = workspace_bounds["z_min"] <= Z <= workspace_bounds["z_max"]
-            if in_x and in_y and in_z:
-                filtered.append(obj)
-            else:
-                reason = f"X={X:.0f}" if not in_x else (f"Y={Y:.0f}" if not in_y else f"Z={Z:.0f}")
-                rejected.append((obj.object_id, reason))
-        print(f"  Workspace filter: {len(filtered)} kept, {len(rejected)} rejected")
-        for obj_id, reason in rejected:
-            print(f"    rejected obj #{obj_id}: {reason} out of bounds")
-        centroids = filtered
+    # Create visualization
+    if clean_vis:
+        # Use clean visualization with thin borders (accurate mask boundaries)
+        vis_img_centroids = visualize_masks_clean(rgb_resized, pred_masks, centroids, alpha=0.5)
+    else:
+        # Use original UOAIS visualization (thick borders)
+        # Reorder for visualization (occluded objects first)
+        if len(pred_occlusions) > 0:
+            idx_shuf = np.concatenate((np.where(pred_occlusions == 1)[0], np.where(pred_occlusions == 0)[0]))
+            pred_masks_vis = pred_masks[idx_shuf]
+            pred_occs_vis = pred_occlusions[idx_shuf]
+            pred_boxes_vis = pred_boxes[idx_shuf]
+        else:
+            pred_masks_vis = pred_masks
+            pred_occs_vis = pred_occlusions
+            pred_boxes_vis = pred_boxes
 
-    vis_img_centroids = visualize_masks_clean(rgb_work, pred_masks, centroids, alpha=0.5)
-    if draw_bbox:
-        for obj in centroids:
-            x1, y1, x2, y2 = [int(round(v)) for v in obj.bbox]
-            cv2.rectangle(vis_img_centroids, (x1, y1), (x2, y2), (255, 255, 0), 1)
+        # UOAIS visualization
+        vis_img = visualize_pred_amoda_occ(rgb_resized, pred_masks_vis, pred_boxes_vis, pred_occs_vis)
+
+        # Draw centroids on visualization
+        vis_img_centroids = draw_centroids(
+            vis_img,
+            centroids,
+            draw_amodal=True,
+            draw_visible=True,
+            draw_bbox_center=False,
+            draw_bbox=draw_bbox,
+            draw_labels=True
+        )
 
     return {
-        "centroids": centroids,
-        "masks": pred_masks,
-        "visible_masks": pred_visible_masks,
-        "boxes": pred_boxes,
-        "occlusions": pred_occlusions,
-        "scores": scores,
-        "vis_image": vis_img_centroids,
-        "rgb_resized": rgb_work,
-        "depth_raw_resized": depth_raw_resized,
+        'centroids': centroids,
+        'masks': pred_masks,
+        'visible_masks': pred_visible_masks,
+        'boxes': pred_boxes,
+        'occlusions': pred_occlusions,
+        'scores': scores,
+        'vis_image': vis_img_centroids,
+        'rgb_resized': rgb_resized,
+        'depth_raw_resized': depth_raw_resized
     }
 
 
-def get_parser():
-    p = argparse.ArgumentParser(
-        description="Grasp / centroid computation from instance masks (PNG per object)."
-    )
-    p.add_argument(
-        "--dataset-path",
-        type=str,
-        default="./sample_data",
-        help="Folder with image_color/ or loose images; paired masks in masks/<stem>/",
-    )
-    p.add_argument(
-        "--image-path",
-        type=str,
-        default=None,
-        help="Single RGB image (needs --amodal-masks-dir and/or --simple-masks)",
-    )
-    p.add_argument(
-        "--depth-path",
-        type=str,
-        default=None,
-        help="16-bit or float depth image matching RGB size",
-    )
-    p.add_argument(
-        "--amodal-masks-dir",
-        type=str,
-        default=None,
-        help="Directory of binary mask images, one per instance (sorted by name)",
-    )
-    p.add_argument(
-        "--visible-masks-dir",
-        type=str,
-        default=None,
-        help="Optional; defaults to amodal masks if omitted",
-    )
-    p.add_argument(
-        "--width",
-        type=int,
-        default=None,
-        help="Resize RGB/depth/masks to this width (optional)",
-    )
-    p.add_argument(
-        "--height",
-        type=int,
-        default=None,
-        help="Resize RGB/depth/masks to this height (optional)",
-    )
-    p.add_argument("--output-dir", type=str, default="./output_centroids")
-    p.add_argument(
-        "--max-images",
-        type=int,
-        default=None,
-        help="Process only the first N images (batch mode; order is sorted by filename)",
-    )
-    p.add_argument(
-        "--simple-masks",
-        action="store_true",
-        help="Classic CV instance masks (adaptive threshold + CC), same as pipeline_from_raw_image",
-    )
-    p.add_argument("--use-dummy-depth", action="store_true")
-    p.add_argument("--save-json", action="store_true")
-    p.add_argument(
-        "--centroid-method",
-        type=str,
-        default="suction",
-        choices=[
-            "suction",
-            "adaptive",
-            "skeleton_dt",
-            "top_center",
-            "distance_transform",
-            "ellipse",
-            "circle",
-            "mask_bbox",
-            "bbox",
-            "moments",
-            "median",
-        ],
-    )
-    p.add_argument("--suction-cup-radius", type=int, default=15)
-    p.add_argument(
-        "--use-visible-mask",
-        action="store_true",
-        help="Use visible mask channel for geometry (if you supply separate visible masks)",
-    )
-    p.add_argument("--draw-bbox", action="store_true")
-    p.add_argument("--fx", type=float, default=1349.4442138671875)
-    p.add_argument("--fy", type=float, default=1350.024658203125)
-    p.add_argument("--cx", type=float, default=988.072021484375)
-    p.add_argument("--cy", type=float, default=559.8935546875)
-    p.add_argument("--camera-json", type=str, default=None)
-    p.add_argument("--extrinsics-json", type=str, default=None)
-    p.add_argument("--workspace-filter", action="store_true", default=False)
-    p.add_argument("--aruco-config", type=str, default=None)
-    p.add_argument("--workspace-z-min", type=float, default=2300.0)
-    p.add_argument("--workspace-z-max", type=float, default=2700.0)
-    return p
-
-
-def print_centroids_summary(centroids: List, image_name: str = ""):
+def print_centroids_summary(centroids: list, image_name: str = ""):
+    """Print a summary of detected objects and their centroids."""
     print(f"\n{'='*60}")
     print(f"CENTROID RESULTS: {image_name}")
     print(f"{'='*60}")
-    print(f"Objects: {len(centroids)}\n")
+    print(f"Detected {len(centroids)} objects\n")
+
     for obj in centroids:
         print(f"Object #{obj.object_id}:")
         print(f"  - Geometric Center:  ({obj.centroid_amodal[0]:.1f}, {obj.centroid_amodal[1]:.1f}) px")
@@ -327,6 +396,7 @@ def print_centroids_summary(centroids: List, image_name: str = ""):
             print(f"  - Suction Grasp Pt:  ({obj.grasp_point[0]:.1f}, {obj.grasp_point[1]:.1f}) px")
         if obj.centroid_3d is not None:
             X, Y, Z = obj.centroid_3d
+            # World frame values are in mm (large numbers); camera frame in meters (small)
             if abs(Z) > 10:
                 print(f"  - 3D Center (world): X={X:.1f}mm, Y={Y:.1f}mm, Z={Z:.1f}mm")
             else:
@@ -339,221 +409,184 @@ def print_centroids_summary(centroids: List, image_name: str = ""):
                 print(f"  - 3D Grasp Pt (camera): X={X:.3f}m, Y={Y:.3f}m, Z={Z:.3f}m")
         print(f"  - Occluded: {obj.is_occluded}")
         print(f"  - Confidence: {obj.confidence:.2f}")
+        print(f"  - Visible/Total Area: {obj.visible_area}/{obj.mask_area} "
+              f"({100*obj.visible_area/(obj.mask_area+1e-6):.1f}%)")
         print()
+
+    # Recommend best grasp point
     best = get_best_grasp_point(centroids)
     if best is not None:
         print(f"RECOMMENDED GRASP: Object #{best.object_id}")
         grasp = best.grasp_point if best.grasp_point else best.centroid_amodal
         print(f"  Grasp at pixel: ({grasp[0]:.1f}, {grasp[1]:.1f})")
+        if best.grasp_point_3d is not None:
+            X, Y, Z = best.grasp_point_3d
+            print(f"  3D coordinates: ({X:.3f}, {Y:.3f}, {Z:.3f}) meters")
     print(f"{'='*60}\n")
 
 
 def main():
     args = get_parser().parse_args()
 
+    # Setup UOAIS model
+    cfg = get_cfg()
+    cfg.merge_from_file(args.config_file)
+    cfg.defrost()
+    cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR, "model_final.pth")
+    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = args.confidence_threshold
+    cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = args.confidence_threshold
+    predictor = DefaultPredictor(cfg)
+    W, H = cfg.INPUT.IMG_SIZE
+
+    # Setup CG-Net (optional foreground segmentation)
+    fg_model = None
+    if args.use_cgnet:
+        print("Loading CG-Net foreground segmentation model...")
+        checkpoint = torch.load(args.cgnet_weight_path)
+        fg_model = Context_Guided_Network(classes=2, in_channel=4)
+        fg_model.load_state_dict(checkpoint['model'])
+        fg_model.cuda()
+        fg_model.eval()
+
+    # Camera intrinsics for 3D projection
+    # Load from camera.json if provided, otherwise use CLI args
     if args.camera_json and os.path.exists(args.camera_json):
         with open(args.camera_json) as f:
             cam = json.load(f)
         raw_intrinsics = {
-            "fx": cam["fx"],
-            "fy": cam["fy"],
-            "cx": cam["cx"],
-            "cy": cam["cy"],
-            "orig_w": cam.get("width", 1920),
-            "orig_h": cam.get("height", 1080),
+            'fx': cam['fx'], 'fy': cam['fy'],
+            'cx': cam['cx'], 'cy': cam['cy'],
+            'orig_w': cam.get('width', 1920),
+            'orig_h': cam.get('height', 1080),
         }
+        print(f"Loaded intrinsics from {args.camera_json}: fx={cam['fx']:.1f}, fy={cam['fy']:.1f}")
     else:
         raw_intrinsics = {
-            "fx": args.fx,
-            "fy": args.fy,
-            "cx": args.cx,
-            "cy": args.cy,
-            "orig_w": 1920,
-            "orig_h": 1080,
+            'fx': args.fx, 'fy': args.fy,
+            'cx': args.cx, 'cy': args.cy,
+            'orig_w': 1920, 'orig_h': 1080,
         }
 
+    # Scale intrinsics to match the model's resized resolution (e.g. 640x480)
+    scale_x = W / raw_intrinsics['orig_w']
+    scale_y = H / raw_intrinsics['orig_h']
+    camera_intrinsics = {
+        'fx': raw_intrinsics['fx'] * scale_x,
+        'fy': raw_intrinsics['fy'] * scale_y,
+        'cx': raw_intrinsics['cx'] * scale_x,
+        'cy': raw_intrinsics['cy'] * scale_y,
+    }
+    print(f"Scaled intrinsics ({raw_intrinsics['orig_w']}x{raw_intrinsics['orig_h']} → {W}x{H}): "
+          f"fx={camera_intrinsics['fx']:.1f}, cx={camera_intrinsics['cx']:.1f}")
+
+    # Load extrinsics for camera→world transform (optional)
     camera_extrinsics = None
     if args.extrinsics_json and os.path.exists(args.extrinsics_json):
         with open(args.extrinsics_json) as f:
             ext = json.load(f)
+        # Take the first entry (camera serial key)
         ext_data = next(iter(ext.values()))
         camera_extrinsics = {
-            "R": np.array(ext_data["R"], dtype=np.float64),
-            "t": np.array(ext_data["t"], dtype=np.float64),
+            'R': np.array(ext_data['R'], dtype=np.float64),
+            't': np.array(ext_data['t'], dtype=np.float64),
         }
+        print(f"Loaded extrinsics from {args.extrinsics_json}: "
+              f"t=[{ext_data['t'][0]:.1f}, {ext_data['t'][1]:.1f}, {ext_data['t'][2]:.1f}]mm")
 
-    workspace_bounds = None
-    if args.workspace_filter:
-        if camera_extrinsics is None:
-            print("Warning: --workspace-filter needs --extrinsics-json; disabled.")
-        else:
-            ws_w, ws_h = 850.0, 480.0
-            if args.aruco_config and os.path.exists(args.aruco_config):
-                with open(args.aruco_config) as f:
-                    aruco = json.load(f)
-                ws_w = aruco.get("workspace_width_mm", ws_w)
-                ws_h = aruco.get("workspace_height_mm", ws_h)
-            workspace_bounds = {
-                "x_min": -ws_w / 2,
-                "x_max": ws_w / 2,
-                "y_min": -ws_h / 2,
-                "y_max": ws_h / 2,
-                "z_min": args.workspace_z_min,
-                "z_max": args.workspace_z_max,
-            }
-
+    # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
 
-    if args.image_path:
-        if not args.amodal_masks_dir and not args.simple_masks:
-            raise SystemExit("--image-path requires --amodal-masks-dir and/or --simple-masks")
+    # Collect image paths
+    if args.image_path is not None:
+        if not os.path.exists(args.image_path):
+            raise ValueError(f"Image not found: {args.image_path}")
         rgb_paths = [args.image_path]
         depth_paths = [args.depth_path] if args.depth_path else [None]
-        mask_dirs = [args.amodal_masks_dir]
-        visible_dirs = [args.visible_masks_dir] if args.visible_masks_dir else [None]
+        print(f"Processing single image: {args.image_path}")
     else:
+        # Load from dataset directory
         rgb_paths = sorted(
-            glob.glob(f"{args.dataset_path}/image_color/*.png")
-            + glob.glob(f"{args.dataset_path}/image_color/*.jpg")
-            + glob.glob(f"{args.dataset_path}/*.png")
-            + glob.glob(f"{args.dataset_path}/*.jpg")
+            glob.glob(f"{args.dataset_path}/image_color/*.png") +
+            glob.glob(f"{args.dataset_path}/image_color/*.jpg") +
+            glob.glob(f"{args.dataset_path}/*.png") +
+            glob.glob(f"{args.dataset_path}/*.jpg")
         )
         depth_paths = sorted(glob.glob(f"{args.dataset_path}/disparity/*.png"))
-        mask_dirs = []
-        visible_dirs = []
 
-        if not rgb_paths:
-            raise SystemExit(f"No images under {args.dataset_path}")
-
-        if args.max_images is not None:
-            rgb_paths = rgb_paths[: max(0, args.max_images)]
-
-        if args.simple_masks:
-            mask_dirs = [None] * len(rgb_paths)
-            visible_dirs = [None] * len(rgb_paths)
-        else:
-            for rp in rgb_paths:
-                md = resolve_mask_dir_for_image(args.dataset_path, rp)
-                if md is None:
-                    raise SystemExit(
-                        f"No mask folder for {rp}. Expected {args.dataset_path}/masks/<stem>/ "
-                        f"or amodal_masks/<stem>/ (or pass --simple-masks)"
-                    )
-                mask_dirs.append(md)
-                base = os.path.splitext(os.path.basename(rp))[0]
-                vd = None
-                for sub in ("visible_masks", "masks_visible"):
-                    d = os.path.join(args.dataset_path, sub, base)
-                    if os.path.isdir(d):
-                        vd = d
-                        break
-                visible_dirs.append(vd)
+        if len(rgb_paths) == 0:
+            raise ValueError(f"No images found in {args.dataset_path}")
 
         if len(depth_paths) == 0:
-            print("Warning: no disparity/*.png; using dummy depth.")
+            print("Warning: No depth images found. Using dummy depth.")
             args.use_dummy_depth = True
 
+    # Process all images
+    all_results = []
+
     for idx, rgb_path in enumerate(rgb_paths):
-        print(f"\n[{idx+1}/{len(rgb_paths)}] {rgb_path}")
+        print(f"\nProcessing [{idx+1}/{len(rgb_paths)}]: {rgb_path}")
+
+        # Load RGB image
         rgb_img = cv2.imread(rgb_path)
         if rgb_img is None:
-            print(f"Skip (unreadable): {rgb_path}")
+            print(f"Warning: Could not read {rgb_path}")
             continue
 
-        if args.width and args.height:
-            rgb_img = cv2.resize(rgb_img, (args.width, args.height))
-        h, w = rgb_img.shape[:2]
-
-        scale_x = w / raw_intrinsics["orig_w"]
-        scale_y = h / raw_intrinsics["orig_h"]
-        camera_intrinsics = {
-            "fx": raw_intrinsics["fx"] * scale_x,
-            "fy": raw_intrinsics["fy"] * scale_y,
-            "cx": raw_intrinsics["cx"] * scale_x,
-            "cy": raw_intrinsics["cy"] * scale_y,
-        }
-
-        if args.use_dummy_depth:
-            depth_img_raw = np.ones((h, w), dtype=np.float32) * 800.0
-        elif args.image_path:
-            dp = args.depth_path
-            if dp and os.path.isfile(dp):
-                depth_img_raw = cv2.imread(dp, cv2.IMREAD_UNCHANGED)
-                depth_img_raw = (
-                    depth_img_raw.astype(np.float32)
-                    if depth_img_raw is not None
-                    else np.ones((h, w), dtype=np.float32) * 800.0
-                )
-            else:
-                depth_img_raw = np.ones((h, w), dtype=np.float32) * 800.0
-        elif idx < len(depth_paths):
-            depth_img_raw = cv2.imread(depth_paths[idx], cv2.IMREAD_UNCHANGED)
-            depth_img_raw = (
-                depth_img_raw.astype(np.float32)
-                if depth_img_raw is not None
-                else np.ones((h, w), dtype=np.float32) * 800.0
-            )
+        # Load depth image
+        if args.use_dummy_depth or (idx >= len(depth_paths)) or depth_paths[idx] is None:
+            depth_img_raw = np.ones((rgb_img.shape[0], rgb_img.shape[1]), dtype=np.float32) * 800.0
         else:
-            depth_img_raw = np.ones((h, w), dtype=np.float32) * 800.0
-        if depth_img_raw.shape[:2] != (h, w):
-            depth_img_raw = cv2.resize(
-                depth_img_raw, (w, h), interpolation=cv2.INTER_NEAREST
-            )
+            # Use cv2.IMREAD_UNCHANGED to preserve 16-bit depth values
+            depth_img_raw = cv2.imread(depth_paths[idx], cv2.IMREAD_UNCHANGED).astype(np.float32)
 
-        if args.simple_masks:
-            print("  --simple-masks: running classic CV segmentation…")
-            mask_list = segment_objects(rgb_img)
-            if not mask_list:
-                print("  Skip: no instances found.")
-                continue
-            amodal = np.stack([m.astype(np.float32) for m in mask_list], axis=0)
-            visible = amodal.copy()
-        else:
-            amodal = load_binary_masks(mask_dirs[idx], w, h)
-            if visible_dirs[idx]:
-                visible = load_binary_masks(visible_dirs[idx], w, h)
-                if visible.shape[0] != amodal.shape[0]:
-                    raise ValueError("Visible mask count must match amodal mask count")
-            else:
-                visible = amodal.copy()
-
-        use_amodal = not args.use_visible_mask
-
-        results = process_from_masks(
+        # Process image
+        results = process_single_image(
             rgb_img=rgb_img,
             depth_img_raw=depth_img_raw,
-            pred_masks=amodal,
-            pred_visible_masks=visible,
+            predictor=predictor,
+            cfg=cfg,
+            fg_model=fg_model,
             centroid_method=args.centroid_method,
             camera_intrinsics=camera_intrinsics,
             camera_extrinsics=camera_extrinsics,
-            use_amodal=use_amodal,
+            use_amodal=not args.use_visible_mask,
             draw_bbox=args.draw_bbox,
-            suction_cup_radius=args.suction_cup_radius,
-            workspace_bounds=workspace_bounds,
+            clean_vis=args.clean_vis,
+            suction_cup_radius=args.suction_cup_radius
         )
 
+        # Print summary
         base_name = os.path.splitext(os.path.basename(rgb_path))[0]
-        print_centroids_summary(results["centroids"], base_name)
+        print_centroids_summary(results['centroids'], base_name)
 
-        vis_combined = np.hstack([results["rgb_resized"], results["vis_image"]])
-        out_vis = os.path.join(args.output_dir, f"{base_name}_centroids.png")
-        cv2.imwrite(out_vis, vis_combined)
-        print(f"Saved: {out_vis}")
+        # Save visualization
+        output_vis_path = os.path.join(args.output_dir, f"{base_name}_centroids.png")
 
+        # Create combined visualization: RGB | Segmentation+Centroids
+        vis_combined = np.hstack([results['rgb_resized'], results['vis_image']])
+        cv2.imwrite(output_vis_path, vis_combined)
+        print(f"Saved visualization: {output_vis_path}")
+
+        # Save JSON data
         if args.save_json:
-            data = {
-                "image_path": rgb_path,
-                "mask_dir": mask_dirs[idx] if not args.simple_masks else "simple_cv",
-                "num_objects": len(results["centroids"]),
-                "centroids": centroids_to_dict(results["centroids"]),
-                "camera_intrinsics": camera_intrinsics,
-                "coordinate_frame": "world_mm" if camera_extrinsics is not None else "camera_m",
+            json_data = {
+                'image_path': rgb_path,
+                'num_objects': len(results['centroids']),
+                'centroids': centroids_to_dict(results['centroids']),
+                'camera_intrinsics': camera_intrinsics,
+                'coordinate_frame': 'world_mm' if camera_extrinsics is not None else 'camera_m',
             }
-            with open(
-                os.path.join(args.output_dir, f"{base_name}_centroids.json"), "w"
-            ) as f:
-                json.dump(data, f, indent=2)
+            json_path = os.path.join(args.output_dir, f"{base_name}_centroids.json")
+            with open(json_path, 'w') as f:
+                json.dump(json_data, f, indent=2)
+            print(f"Saved JSON data: {json_path}")
+
+        all_results.append({
+            'image': base_name,
+            'centroids': results['centroids']
+        })
+
+    print(f"\nProcessed {len(all_results)} images. Results saved to: {args.output_dir}")
 
 
 if __name__ == "__main__":

@@ -10,9 +10,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 You understand and agree that the authors are under no obligation to provide either maintenance services, update services, notices of latent defects, or corrections of defects with regard to the Software. The authors nevertheless reserve the right to update, modify, or discontinue the Software at any time.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-**Repository note:** Learned instance-segmentation code (e.g. bundled Detectron2 / AdelaiDet / related checkpoints) has been removed from this checkout. The third-party notices below still apply to any source or binaries that were previously derived from those projects.
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software. You agree to cite the Unseen Object Amodal Instance Segmentation via Hierarchical Occlusion Modeling paper in documents and papers that report on research using this Software.
 
 
 ************************************************************************
